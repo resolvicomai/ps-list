@@ -37,14 +37,37 @@ const makeStartTime = startTimeString => {
 	return Number.isNaN(parsedDate.getTime()) ? undefined : parsedDate;
 };
 
-// Extract executable path from command line using filesystem validation only
-const extractExecutablePath = commandLine => {
-	if (!commandLine) {
+const isExecutableFile = filePath => {
+	try {
+		fs.accessSync(filePath, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const resolveExecutableFromPath = commandName => {
+	if (!commandName || commandName.includes('/')) {
 		return '';
 	}
 
-	// Skip non-path commands (no filesystem validation possible)
-	if (!commandLine.startsWith('/') && !commandLine.startsWith('"')) {
+	for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+		if (!directory) {
+			continue;
+		}
+
+		const executablePath = path.join(directory, commandName);
+		if (isExecutableFile(executablePath)) {
+			return executablePath;
+		}
+	}
+
+	return '';
+};
+
+// Extract executable path from command line using filesystem validation only
+const extractExecutablePath = commandLine => {
+	if (!commandLine) {
 		return '';
 	}
 
@@ -65,6 +88,13 @@ const extractExecutablePath = commandLine => {
 	const firstCommandToken = commandParts[0];
 	if (fs.existsSync(firstCommandToken)) {
 		return firstCommandToken;
+	}
+
+	if (!firstCommandToken.startsWith('/')) {
+		const resolvedExecutablePath = resolveExecutableFromPath(firstCommandToken);
+		if (resolvedExecutablePath) {
+			return resolvedExecutablePath;
+		}
 	}
 
 	// Strategy 2: Progressive combination for paths with spaces
@@ -94,6 +124,39 @@ const resolveExecutablePath = (operatingSystemPlatform, processId, commandLine) 
 
 	// Extract path from command line
 	return extractExecutablePath(commandLine);
+};
+
+const extractArguments = (commandLine, executablePath, commandName) => {
+	if (!commandLine) {
+		return '';
+	}
+
+	const trimmedCommandLine = commandLine.trim();
+	const commandPrefixes = [
+		executablePath && `"${executablePath}"`,
+		executablePath,
+		commandName,
+	]
+		.filter(Boolean)
+		.sort((a, b) => b.length - a.length);
+
+	for (const commandPrefix of commandPrefixes) {
+		if (trimmedCommandLine === commandPrefix) {
+			return '';
+		}
+
+		if (trimmedCommandLine.startsWith(`${commandPrefix} `)) {
+			return trimmedCommandLine.slice(commandPrefix.length).trim();
+		}
+	}
+
+	const quotedExecutableMatch = trimmedCommandLine.match(/^"[^"]+"\s+(.*)$/);
+	if (quotedExecutableMatch) {
+		return quotedExecutableMatch[1].trim();
+	}
+
+	const firstSpaceIndex = trimmedCommandLine.indexOf(' ');
+	return firstSpaceIndex === -1 ? '' : trimmedCommandLine.slice(firstSpaceIndex + 1).trim();
 };
 
 // Parse and validate numeric field with fallback
@@ -141,6 +204,7 @@ const parseProcessFields = ({processId, parentProcessId, userId, cpuUsage, memor
 		path: resolvedExecutablePath,
 		startTime: makeStartTime(startTimeString),
 		cmd: command || '',
+		args: extractArguments(command || '', resolvedExecutablePath, commandName),
 	};
 };
 
